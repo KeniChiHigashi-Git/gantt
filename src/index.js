@@ -138,6 +138,9 @@ export default class Gantt {
     }
 
     setup_tasks(tasks) {
+        const row_map = {};
+        let unique_row_count = 0;
+
         this.tasks = tasks
             .map((task, i) => {
                 if (!task.start) {
@@ -214,9 +217,21 @@ export default class Gantt {
                     task.id = `${task.id}`;
                 }
 
+                // --- 改修ポイント: 行の集約 (rowId) と レイヤー (layerId) の設定 ---
+                const rId = task.rowId !== undefined && task.rowId !== null && task.rowId !== '' ? task.rowId : task.id;
+                if (row_map[rId] === undefined) {
+                    row_map[rId] = unique_row_count;
+                    unique_row_count++;
+                }
+                task._row_index = row_map[rId];
+                task.layerId = parseInt(task.layerId, 10) || 0;
+                // -------------------------------------------------------------------
+
                 return task;
             })
             .filter((t) => t);
+            
+        this.unique_row_count = unique_row_count;
         this.setup_dependencies();
     }
 
@@ -417,11 +432,12 @@ export default class Gantt {
 
     make_grid_background() {
         const grid_width = this.dates.length * this.config.column_width;
+        // --- 改修ポイント: 高さの計算を行数（unique_row_count）ベースに変更 ---
         const grid_height = Math.max(
             this.config.header_height +
                 this.options.padding +
                 (this.options.bar_height + this.options.padding) *
-                    this.tasks.length -
+                    this.unique_row_count -
                 10,
             this.options.container_height !== 'auto'
                 ? this.options.container_height
@@ -734,9 +750,11 @@ export default class Gantt {
         this.highlight_holidays();
         this.config.ignored_positions = [];
 
+        // --- 改修ポイント: 高さの計算を行数（unique_row_count）ベースに変更 ---
         const height =
             (this.options.bar_height + this.options.padding) *
-            this.tasks.length;
+            this.unique_row_count;
+            
         this.layers.grid.innerHTML += `<pattern id="diagonalHatch" patternUnits="userSpaceOnUse" width="4" height="4">
           <path d="M-1,1 l2,-2
                    M0,4 l4,-4
@@ -887,11 +905,22 @@ export default class Gantt {
     }
 
     make_bars() {
+        // --- 改修ポイント: 描画順（layerId）のソート対応 ---
         this.bars = this.tasks.map((task) => {
             const bar = new Bar(this, task);
-            this.layers.bar.appendChild(bar.group);
+            // ※ ここではまだDOMに追加しません
             return bar;
         });
+
+        // 描画順を制御するため、barsをlayerIdでソート（数値が大きいほど後から描画＝前面に来る）
+        const sortedBars = [...this.bars].sort((a, b) => {
+            return (a.task.layerId || 0) - (b.task.layerId || 0);
+        });
+
+        // ソートされた順序でDOM（SVG）へ要素を追加
+        for (let bar of sortedBars) {
+            this.layers.bar.appendChild(bar.group);
+        }
     }
 
     make_arrows() {
@@ -1567,10 +1596,6 @@ export default class Gantt {
         if (this.options['on_' + event]) {
             this.options['on_' + event].apply(this, args);
         }
-    }
-
-    view_is(view) {
-        return this.options.view_mode.name === view;
     }
 
     getDateFromClick(event) {
