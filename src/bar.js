@@ -54,7 +54,7 @@ export default class Bar {
         if (!this.task._start) this.task._start = new Date(this.task.start);
         if (!this.task._end) this.task._end = new Date(this.task.end);
         this.compute_x();
-        this.compute_y();
+        this.compute_y(); // ここで rowId に基づく計算が行われます
         this.compute_duration();
         const max_radius = this.height / 2;
         if (this.gantt.options.bar_corner_radius > max_radius) {
@@ -174,6 +174,7 @@ export default class Bar {
         });
         if (this.task.color_progress)
             this.$bar_progress.style.fill = this.task.color_progress;
+        
         const x =
             (date_utils.diff(
                 this.task._start,
@@ -239,7 +240,6 @@ export default class Bar {
             class: 'bar-label',
             append_to: this.bar_group,
         });
-        // labels get BBox in the next tick
         requestAnimationFrame(() => this.update_label_position());
     }
 
@@ -341,6 +341,13 @@ export default class Bar {
 
     bind() {
         if (this.invalid) return;
+
+        // --- 改修ポイント：操作時に最前面へ ---
+        $.on(this.group, 'mousedown', () => {
+            const parent = this.group.parentNode;
+            if (parent) parent.appendChild(this.group);
+        });
+
         this.setup_click_event();
     }
 
@@ -401,7 +408,6 @@ export default class Bar {
 
         $.on(this.group, 'dblclick', (e) => {
             if (this.action_completed) {
-                // just finished a move action, wait for a few seconds
                 return;
             }
             this.group.classList.remove('active');
@@ -410,6 +416,8 @@ export default class Bar {
 
             this.gantt.trigger_event('double_click', [this.task]);
         });
+        
+        // Touch対応ロジック（そのまま維持）
         let tapedTwice = false;
         $.on(this.group, 'touchstart', (e) => {
             if (!tapedTwice) {
@@ -420,16 +428,10 @@ export default class Bar {
                 return false;
             }
             e.preventDefault();
-            //action on double tap goes below
-
-            if (this.action_completed) {
-                // just finished a move action, wait for a few seconds
-                return;
-            }
+            if (this.action_completed) return;
             this.group.classList.remove('active');
             if (this.gantt.popup)
                 this.gantt.popup.parent.classList.remove('hide');
-
             this.gantt.trigger_event('double_click', [this.task]);
         });
     }
@@ -453,6 +455,9 @@ export default class Bar {
             this.update_attr(bar, 'width', width);
             this.$date_highlight.style.width = width + 'px';
         }
+
+        // --- 改修ポイント：ドラッグ移動中も Y座標は task.top (rowId由来) を維持 ---
+        bar.setAttribute('y', this.task.top || this.y);
 
         this.update_label_position();
         this.update_handle_position();
@@ -564,7 +569,7 @@ export default class Bar {
             this.gantt.config.ignored_positions.reduce((acc, val) => {
                 return acc + (val >= this.x && val <= progress_area);
             }, 0) *
-                this.gantt.config.column_width;
+            this.gantt.config.column_width;
         if (progress < 0) return 0;
         const total =
             this.$bar.getWidth() -
@@ -594,42 +599,25 @@ export default class Bar {
             this.gantt.config.step;
 
         let x = diff * column_width;
-
-        /* Since the column width is based on 30,
-        we count the month-difference, multiply it by 30 for a "pseudo-month"
-        and then add the days in the month, making sure the number does not exceed 29
-        so it is within the column */
-
-        // if (this.gantt.view_is('Month')) {
-        //     const diffDaysBasedOn30DayMonths =
-        //         date_utils.diff(task_start, gantt_start, 'month') * 30;
-        //     const dayInMonth = Math.min(
-        //         29,
-        //         date_utils.format(
-        //             task_start,
-        //             'DD',
-        //             this.gantt.options.language,
-        //         ),
-        //     );
-        //     const diff = diffDaysBasedOn30DayMonths + dayInMonth;
-
-        //     x = (diff * column_width) / 30;
-        // }
-
         this.x = x;
     }
 
     compute_y() {
+        // --- 改修：rowId があればそれに基づいて計算、なければ従来通り _index を使用 ---
+        const index = (this.task._row_index !== undefined) ? this.task._row_index : this.task._index;
+        
         this.y =
             this.gantt.config.header_height +
             this.gantt.options.padding / 2 +
-            this.task._index * (this.height + this.gantt.options.padding);
+            index * (this.height + this.gantt.options.padding);
+            
+        // 将来的な update 時に備えて top に保存
+        this.task.top = this.y;
     }
 
     compute_duration() {
         let actual_duration_in_days = 0,
             duration_in_days = 0;
-        // console.log(this.task._start, this.task._end);
         for (
             let d = new Date(this.task._start);
             d < this.task._end;
@@ -729,6 +717,12 @@ export default class Bar {
                 );
             }
         }
+        // Y座標を中央に補正（rowId集約対応）
+        label.setAttribute('y', this.y + this.height / 2);
+        if (img) {
+            img.setAttribute('y', this.y + 2);
+            img_mask.setAttribute('y', this.y + 2);
+        }
     }
 
     update_handle_position() {
@@ -740,8 +734,15 @@ export default class Bar {
         this.handle_group
             .querySelector('.handle.right')
             .setAttribute('x', bar.getEndX());
+        
+        // Y座標も更新
+        this.handle_group.querySelectorAll('.handle').forEach(h => h.setAttribute('y', bar.getY() + this.height / 4));
+        
         const handle = this.group.querySelector('.handle.progress');
-        handle && handle.setAttribute('cx', this.$bar_progress.getEndX());
+        if (handle) {
+            handle.setAttribute('cx', this.$bar_progress.getEndX());
+            handle.setAttribute('cy', this.$bar_progress.getY() + this.$bar_progress.getHeight() / 2);
+        }
     }
 
     update_arrow_position() {
